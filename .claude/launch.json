@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/.pnpm/next@16.2.0_@babel+core@7.2_c8e5457a664b74f12ad9e58c291cae19/node_modules/next/dist/bin/next", "dev"],
+      "cwd": "app",
+      "port": 3000,
+      "autoPort": true
+    }
+  ]
+}
