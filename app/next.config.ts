@@ -1,7 +1,6 @@
 import type { NextConfig } from "next";
+import { withAmplify } from "@aws-amplify/adapter-nextjs";
 
-const nextConfig: NextConfig = {
-  output: 'standalone',
-};
+const nextConfig: NextConfig = {};
 
-export default nextConfig;
+export default withAmplify(nextConfig);
