@@ -14,70 +14,30 @@ rm -rf "$HOSTING"
 mkdir -p "$HOSTING/compute/default"
 mkdir -p "$HOSTING/static"
 
-# 1. Copy standalone output to compute/default
-# Copy non-node_modules files first (server.js, package.json, .next/)
+# 1. Copy standalone server files (server.js, package.json, .next/)
 echo "Copying standalone server files..."
 for item in "$STANDALONE"/*; do
   name=$(basename "$item")
   if [ "$name" != "node_modules" ]; then
-    cp -rL "$item" "$HOSTING/compute/default/$name"
+    cp -r "$item" "$HOSTING/compute/default/$name"
   fi
 done
 
-# Copy each package from standalone node_modules individually
-# Skip broken symlinks (pnpm can leave dangling refs)
-echo "Copying node_modules packages..."
-mkdir -p "$HOSTING/compute/default/node_modules"
+# 2. Install production dependencies fresh with npm (no symlinks)
+# This is the ONLY reliable way to get real files on pnpm-based builds.
+# pnpm symlinks are multi-layered and cp -rL cannot fully resolve them.
+echo "Installing production dependencies with npm (no symlinks)..."
+cp "$ROOT/package.json" "$HOSTING/compute/default/package.json"
 
-for pkg in "$STANDALONE/node_modules"/*; do
-  name=$(basename "$pkg")
-  # Skip hidden dirs (.pnpm, .package-lock.json, etc.)
-  [[ "$name" == .* ]] && continue
+cd "$HOSTING/compute/default"
+npm install --omit=dev --ignore-scripts 2>&1 | tail -5
+cd "$ROOT"
 
-  # For scoped packages (@next, @swc, @img), copy contents
-  if [[ "$name" == @* ]]; then
-    mkdir -p "$HOSTING/compute/default/node_modules/$name"
-    for subpkg in "$pkg"/*; do
-      subname=$(basename "$subpkg")
-      if cp -rL "$subpkg" "$HOSTING/compute/default/node_modules/$name/$subname" 2>/dev/null; then
-        echo "  Copied $name/$subname"
-      else
-        echo "  Skipped broken symlink: $name/$subname"
-      fi
-    done
-  else
-    if cp -rL "$pkg" "$HOSTING/compute/default/node_modules/$name" 2>/dev/null; then
-      SIZE=$(du -sm "$HOSTING/compute/default/node_modules/$name" 2>/dev/null | cut -f1)
-      echo "  Copied $name: ${SIZE}MB"
-    else
-      # Broken symlink — try copying from root node_modules instead
-      echo "  Broken symlink: $name — copying from root node_modules..."
-      if cp -rL "$ROOT/node_modules/$name" "$HOSTING/compute/default/node_modules/$name" 2>/dev/null; then
-        SIZE=$(du -sm "$HOSTING/compute/default/node_modules/$name" 2>/dev/null | cut -f1)
-        echo "  Fallback copied $name: ${SIZE}MB"
-      else
-        echo "  WARNING: Could not copy $name from either location"
-      fi
-    fi
-  fi
-done
-
-# Verify critical packages
-for pkg in next react react-dom; do
-  if [ -d "$HOSTING/compute/default/node_modules/$pkg" ]; then
-    SIZE=$(du -sm "$HOSTING/compute/default/node_modules/$pkg" 2>/dev/null | cut -f1)
-    echo "  $pkg: ${SIZE}MB"
-  else
-    echo "  WARNING: $pkg missing! Copying from root node_modules..."
-    cp -rL "$ROOT/node_modules/$pkg" "$HOSTING/compute/default/node_modules/$pkg"
-  fi
-done
-
-# 2. Remove non-Linux platform binaries to save space
+# 3. Remove non-Linux platform binaries to save space
 echo "Removing non-Linux platform binaries..."
 cd "$HOSTING/compute/default/node_modules"
 
-# Remove non-Linux @swc binaries
+# Remove non-Linux @next/swc binaries
 for dir in @next/swc-*; do
   case "$dir" in
     *linux-x64*) echo "  Keeping $dir" ;;
@@ -102,24 +62,24 @@ find . -type d \( -name "test" -o -name "tests" -o -name "__tests__" \
 
 # Remove unnecessary files
 find . -type f \( -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" \
-  -o -name "CHANGELOG.md" -o -name "README.md" -o -name "LICENSE" \) \
+  -o -name "CHANGELOG.md" -o -name "README.md" \) \
   -delete 2>/dev/null || true
 
 cd "$ROOT"
 
-# 3. Copy static assets
+# 4. Copy static assets
 echo "Copying static assets..."
 if [ -d "$ROOT/.next/static" ]; then
   mkdir -p "$HOSTING/static/_next/static"
   cp -r "$ROOT/.next/static/." "$HOSTING/static/_next/static/"
 fi
 
-# 4. Copy public folder
+# 5. Copy public folder
 if [ -d "$ROOT/public" ]; then
   cp -r "$ROOT/public/." "$HOSTING/static/"
 fi
 
-# 5. Create deploy-manifest.json
+# 6. Create deploy-manifest.json
 echo "Creating deploy-manifest.json..."
 cat > "$HOSTING/deploy-manifest.json" << 'MANIFEST'
 {
@@ -156,7 +116,7 @@ cat > "$HOSTING/deploy-manifest.json" << 'MANIFEST'
 }
 MANIFEST
 
-# 6. Report final size
+# 7. Report final size
 COMPUTE_SIZE=$(du -sm "$HOSTING/compute/default" | cut -f1)
 echo ""
 echo "=== Deployment bundle created ==="
@@ -178,8 +138,14 @@ NEXT_DIST_SIZE=$(du -sm "$HOSTING/compute/default/node_modules/next/dist" 2>/dev
 echo "next/dist size: ${NEXT_DIST_SIZE}MB"
 
 if [ "${NEXT_DIST_SIZE:-0}" -lt 10 ]; then
-  echo "ERROR: next/dist is too small (${NEXT_DIST_SIZE}MB) — symlinks not resolved properly!"
+  echo "ERROR: next/dist is too small (${NEXT_DIST_SIZE}MB) — packages not installed properly!"
   exit 1
 fi
+
+echo "Key packages:"
+for pkg in next react react-dom; do
+  SIZE=$(du -sm "$HOSTING/compute/default/node_modules/$pkg" 2>/dev/null | cut -f1)
+  echo "  $pkg: ${SIZE}MB"
+done
 
 echo "=== Post-build complete ==="
