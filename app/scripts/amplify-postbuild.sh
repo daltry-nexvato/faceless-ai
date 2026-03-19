@@ -18,52 +18,35 @@ mkdir -p "$HOSTING/static"
 echo "Copying standalone server files..."
 for item in "$STANDALONE"/*; do
   name=$(basename "$item")
-  if [ "$name" != "node_modules" ]; then
-    cp -r "$item" "$HOSTING/compute/default/$name"
+  if [ "$name" = "node_modules" ]; then
+    continue
   fi
+  cp -r "$item" "$HOSTING/compute/default/$name"
 done
 
-# 2. Install ONLY the packages that standalone actually needs (not all deps)
-# pnpm symlinks can't be copied, so we use npm to install real files.
-echo "Building minimal package.json from standalone trace..."
+# 2. Use pnpm deploy to create real node_modules (no symlinks)
+# pnpm deploy is specifically designed for this use case
+echo "Creating real node_modules with pnpm deploy..."
+DEPLOY_DIR=$(mktemp -d)
+pnpm deploy --filter . --prod "$DEPLOY_DIR" 2>&1 | tail -5
 
-# Get the list of packages standalone identified as needed
-STANDALONE_NM="$STANDALONE/node_modules"
-DEPS="{}"
-for pkg in "$STANDALONE_NM"/*; do
-  name=$(basename "$pkg")
-  # Skip hidden dirs and scoped packages (they're sub-deps)
-  [[ "$name" == .* ]] && continue
-  [[ "$name" == @* ]] && continue
-  # Get version from the package's own package.json
-  if [ -f "$pkg/package.json" ] || [ -L "$pkg" ]; then
-    # Read version from the original (resolved) package
-    VER=$(node -e "try{console.log(require('$ROOT/node_modules/$name/package.json').version)}catch{console.log('*')}" 2>/dev/null)
-    DEPS=$(echo "$DEPS" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));d['$name']='$VER';console.log(JSON.stringify(d))")
-  fi
-done
-
-# Create minimal package.json
-cat > "$HOSTING/compute/default/package.json" << MINPKG
-{
-  "name": "amplify-compute",
-  "private": true,
-  "dependencies": $DEPS
-}
-MINPKG
-
-echo "Minimal deps: $DEPS"
-
-cd "$HOSTING/compute/default"
-npm install --ignore-scripts 2>&1 | tail -5
-cd "$ROOT"
+# Copy only node_modules from the deploy output
+if [ -d "$DEPLOY_DIR/node_modules" ]; then
+  cp -r "$DEPLOY_DIR/node_modules" "$HOSTING/compute/default/node_modules"
+  echo "Copied node_modules from pnpm deploy"
+else
+  echo "ERROR: pnpm deploy did not create node_modules!"
+  # Fallback: use rsync to dereference symlinks from standalone
+  echo "Fallback: rsync from standalone node_modules..."
+  rsync -rL --exclude='.pnpm' "$STANDALONE/node_modules/" "$HOSTING/compute/default/node_modules/"
+fi
+rm -rf "$DEPLOY_DIR"
 
 # 3. Aggressively prune to stay under 220MB
 echo "Pruning non-Linux binaries and unnecessary files..."
 NM="$HOSTING/compute/default/node_modules"
 
-# Remove ALL non-linux platform packages (swc, sharp, etc.)
-# npm installs optional deps for all platforms
+# Remove ALL non-linux platform packages
 find "$NM" -type d -name "*darwin*" -exec rm -rf {} + 2>/dev/null || true
 find "$NM" -type d -name "*win32*" -exec rm -rf {} + 2>/dev/null || true
 find "$NM" -type d -name "*arm64*" -exec rm -rf {} + 2>/dev/null || true
@@ -90,13 +73,16 @@ if [ -d "next/dist/compiled/@next" ]; then
   done 2>/dev/null || true
 fi
 
-# Remove test/docs/examples directories
+# Remove sharp and @img (we use fal.ai for images, not Next.js image optimization)
+rm -rf sharp @img detect-libc color color-convert color-name color-string 2>/dev/null || true
+
+# Remove test/docs/examples/benchmarks
 find "$NM" -type d \( -name "test" -o -name "tests" -o -name "__tests__" \
   -o -name "docs" -o -name "doc" -o -name "example" -o -name "examples" \
   -o -name ".github" -o -name "fixtures" -o -name "benchmark" \) \
   -exec rm -rf {} + 2>/dev/null || true
 
-# Remove unnecessary files (source maps, type defs, docs, licenses)
+# Remove unnecessary files
 find "$NM" -type f \( -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" \
   -o -name "*.md" -o -name "*.txt" -o -name "*.yml" -o -name "*.yaml" \
   -o -name "LICENSE*" -o -name "LICENCE*" -o -name "*.flow" \
@@ -104,31 +90,15 @@ find "$NM" -type f \( -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" \
   -o -name "tsconfig*.json" \) \
   -delete 2>/dev/null || true
 
-# Remove next's ESM copies (duplicated code)
-rm -rf "$NM/next/dist/esm" 2>/dev/null || true
+# Remove next ESM duplicate and webpack/sass compiled bundles
+rm -rf next/dist/esm 2>/dev/null || true
+rm -rf next/dist/compiled/webpack 2>/dev/null || true
+rm -rf next/dist/compiled/sass-loader 2>/dev/null || true
+rm -rf next/dist/compiled/css-loader 2>/dev/null || true
+rm -rf next/dist/compiled/mini-css-extract-plugin 2>/dev/null || true
 
-# Remove next's compiled webpack (not used in production standalone)
-rm -rf "$NM/next/dist/compiled/webpack" 2>/dev/null || true
-rm -rf "$NM/next/dist/compiled/sass-loader" 2>/dev/null || true
-rm -rf "$NM/next/dist/compiled/css-loader" 2>/dev/null || true
-rm -rf "$NM/next/dist/compiled/postcss-*" 2>/dev/null || true
-rm -rf "$NM/next/dist/compiled/mini-css-extract-plugin" 2>/dev/null || true
-
-# Remove caniuse-lite (browserslist data, not needed at runtime)
-rm -rf "$NM/caniuse-lite" 2>/dev/null || true
-
-# Remove source-map-js (not needed at runtime)
-rm -rf "$NM/source-map-js" 2>/dev/null || true
-
-# Remove sharp and @img (17MB - image optimization not needed, we use fal.ai)
-rm -rf "$NM/sharp" 2>/dev/null || true
-rm -rf "$NM/@img" 2>/dev/null || true
-rm -rf "$NM/detect-libc" 2>/dev/null || true
-rm -rf "$NM/color" "$NM/color-convert" "$NM/color-name" "$NM/color-string" 2>/dev/null || true
-
-# Report per-package sizes after cleanup
-echo "Package sizes after cleanup:"
-du -sm "$NM"/* 2>/dev/null | sort -rn | head -10
+# Remove caniuse-lite and source-map-js
+rm -rf caniuse-lite source-map-js 2>/dev/null || true
 
 cd "$ROOT"
 
@@ -187,6 +157,10 @@ echo ""
 echo "=== Deployment bundle created ==="
 echo "Compute size: ${COMPUTE_SIZE}MB / 220MB limit"
 
+# Show top packages
+echo "Top packages by size:"
+du -sm "$HOSTING/compute/default/node_modules"/* 2>/dev/null | sort -rn | head -10
+
 if [ "$COMPUTE_SIZE" -gt 220 ]; then
   echo "ERROR: Compute bundle exceeds 220MB limit!"
   exit 1
@@ -194,23 +168,17 @@ fi
 
 # Verify server.js exists
 if [ ! -f "$HOSTING/compute/default/server.js" ]; then
-  echo "ERROR: server.js not found in compute bundle!"
+  echo "ERROR: server.js not found!"
   exit 1
 fi
 
-# Verify next/dist exists with real content
+# Verify next has real content
 NEXT_DIST_SIZE=$(du -sm "$HOSTING/compute/default/node_modules/next/dist" 2>/dev/null | cut -f1)
 echo "next/dist size: ${NEXT_DIST_SIZE}MB"
 
 if [ "${NEXT_DIST_SIZE:-0}" -lt 10 ]; then
-  echo "ERROR: next/dist is too small (${NEXT_DIST_SIZE}MB) — packages not installed properly!"
+  echo "ERROR: next/dist too small — module resolution will fail at runtime!"
   exit 1
 fi
-
-echo "Key packages:"
-for pkg in next react react-dom; do
-  SIZE=$(du -sm "$HOSTING/compute/default/node_modules/$pkg" 2>/dev/null | cut -f1)
-  echo "  $pkg: ${SIZE}MB"
-done
 
 echo "=== Post-build complete ==="
