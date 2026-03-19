@@ -120,6 +120,12 @@ rm -rf "$NM/caniuse-lite" 2>/dev/null || true
 # Remove source-map-js (not needed at runtime)
 rm -rf "$NM/source-map-js" 2>/dev/null || true
 
+# Remove sharp and @img (17MB - image optimization not needed, we use fal.ai)
+rm -rf "$NM/sharp" 2>/dev/null || true
+rm -rf "$NM/@img" 2>/dev/null || true
+rm -rf "$NM/detect-libc" 2>/dev/null || true
+rm -rf "$NM/color" "$NM/color-convert" "$NM/color-name" "$NM/color-string" 2>/dev/null || true
+
 # Report per-package sizes after cleanup
 echo "Package sizes after cleanup:"
 du -sm "$NM"/* 2>/dev/null | sort -rn | head -10
