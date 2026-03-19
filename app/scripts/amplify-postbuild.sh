@@ -15,9 +15,52 @@ mkdir -p "$HOSTING/compute/default"
 mkdir -p "$HOSTING/static"
 
 # 1. Copy standalone output to compute/default
-# Use cp -rL to fully dereference ALL symlink layers (pnpm creates nested symlinks)
-echo "Copying standalone output (dereferencing all symlinks)..."
-cp -rL "$STANDALONE/." "$HOSTING/compute/default/"
+# Copy non-node_modules files first (server.js, package.json, .next/)
+echo "Copying standalone server files..."
+for item in "$STANDALONE"/*; do
+  name=$(basename "$item")
+  if [ "$name" != "node_modules" ]; then
+    cp -rL "$item" "$HOSTING/compute/default/$name"
+  fi
+done
+
+# Copy each package from standalone node_modules individually
+# Skip broken symlinks (pnpm can leave dangling refs)
+echo "Copying node_modules packages..."
+mkdir -p "$HOSTING/compute/default/node_modules"
+
+for pkg in "$STANDALONE/node_modules"/*; do
+  name=$(basename "$pkg")
+  # Skip hidden dirs (.pnpm, .package-lock.json, etc.)
+  [[ "$name" == .* ]] && continue
+
+  # For scoped packages (@next, @swc, @img), copy contents
+  if [[ "$name" == @* ]]; then
+    mkdir -p "$HOSTING/compute/default/node_modules/$name"
+    for subpkg in "$pkg"/*; do
+      subname=$(basename "$subpkg")
+      if cp -rL "$subpkg" "$HOSTING/compute/default/node_modules/$name/$subname" 2>/dev/null; then
+        echo "  Copied $name/$subname"
+      else
+        echo "  Skipped broken symlink: $name/$subname"
+      fi
+    done
+  else
+    if cp -rL "$pkg" "$HOSTING/compute/default/node_modules/$name" 2>/dev/null; then
+      SIZE=$(du -sm "$HOSTING/compute/default/node_modules/$name" 2>/dev/null | cut -f1)
+      echo "  Copied $name: ${SIZE}MB"
+    else
+      # Broken symlink — try copying from root node_modules instead
+      echo "  Broken symlink: $name — copying from root node_modules..."
+      if cp -rL "$ROOT/node_modules/$name" "$HOSTING/compute/default/node_modules/$name" 2>/dev/null; then
+        SIZE=$(du -sm "$HOSTING/compute/default/node_modules/$name" 2>/dev/null | cut -f1)
+        echo "  Fallback copied $name: ${SIZE}MB"
+      else
+        echo "  WARNING: Could not copy $name from either location"
+      fi
+    fi
+  fi
+done
 
 # Verify critical packages
 for pkg in next react react-dom; do
