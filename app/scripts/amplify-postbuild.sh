@@ -104,8 +104,21 @@ find "$NM" -type f \( -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" \
   -o -name "tsconfig*.json" \) \
   -delete 2>/dev/null || true
 
-# Remove next's cjs copies if esm exists (duplicated code)
+# Remove next's ESM copies (duplicated code)
 rm -rf "$NM/next/dist/esm" 2>/dev/null || true
+
+# Remove next's compiled webpack (not used in production standalone)
+rm -rf "$NM/next/dist/compiled/webpack" 2>/dev/null || true
+rm -rf "$NM/next/dist/compiled/sass-loader" 2>/dev/null || true
+rm -rf "$NM/next/dist/compiled/css-loader" 2>/dev/null || true
+rm -rf "$NM/next/dist/compiled/postcss-*" 2>/dev/null || true
+rm -rf "$NM/next/dist/compiled/mini-css-extract-plugin" 2>/dev/null || true
+
+# Remove caniuse-lite (browserslist data, not needed at runtime)
+rm -rf "$NM/caniuse-lite" 2>/dev/null || true
+
+# Remove source-map-js (not needed at runtime)
+rm -rf "$NM/source-map-js" 2>/dev/null || true
 
 # Report per-package sizes after cleanup
 echo "Package sizes after cleanup:"
