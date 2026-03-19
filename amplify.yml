@@ -10,8 +10,11 @@ applications:
         build:
           commands:
             - pnpm build
+        postBuild:
+          commands:
+            - node scripts/amplify-postbuild.mjs
       artifacts:
-        baseDirectory: .next
+        baseDirectory: .amplify-hosting
         files:
           - '**/*'
       cache:
