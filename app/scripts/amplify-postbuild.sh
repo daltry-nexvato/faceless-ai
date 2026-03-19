@@ -23,14 +23,39 @@ for item in "$STANDALONE"/*; do
   fi
 done
 
-# 2. Install production dependencies fresh with npm (no symlinks)
-# This is the ONLY reliable way to get real files on pnpm-based builds.
-# pnpm symlinks are multi-layered and cp -rL cannot fully resolve them.
-echo "Installing production dependencies with npm (no symlinks)..."
-cp "$ROOT/package.json" "$HOSTING/compute/default/package.json"
+# 2. Install ONLY the packages that standalone actually needs (not all deps)
+# pnpm symlinks can't be copied, so we use npm to install real files.
+echo "Building minimal package.json from standalone trace..."
+
+# Get the list of packages standalone identified as needed
+STANDALONE_NM="$STANDALONE/node_modules"
+DEPS="{}"
+for pkg in "$STANDALONE_NM"/*; do
+  name=$(basename "$pkg")
+  # Skip hidden dirs and scoped packages (they're sub-deps)
+  [[ "$name" == .* ]] && continue
+  [[ "$name" == @* ]] && continue
+  # Get version from the package's own package.json
+  if [ -f "$pkg/package.json" ] || [ -L "$pkg" ]; then
+    # Read version from the original (resolved) package
+    VER=$(node -e "try{console.log(require('$ROOT/node_modules/$name/package.json').version)}catch{console.log('*')}" 2>/dev/null)
+    DEPS=$(echo "$DEPS" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));d['$name']='$VER';console.log(JSON.stringify(d))")
+  fi
+done
+
+# Create minimal package.json
+cat > "$HOSTING/compute/default/package.json" << MINPKG
+{
+  "name": "amplify-compute",
+  "private": true,
+  "dependencies": $DEPS
+}
+MINPKG
+
+echo "Minimal deps: $DEPS"
 
 cd "$HOSTING/compute/default"
-npm install --omit=dev --ignore-scripts 2>&1 | tail -5
+npm install --ignore-scripts 2>&1 | tail -5
 cd "$ROOT"
 
 # 3. Remove non-Linux platform binaries to save space
