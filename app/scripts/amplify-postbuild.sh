@@ -58,37 +58,58 @@ cd "$HOSTING/compute/default"
 npm install --ignore-scripts 2>&1 | tail -5
 cd "$ROOT"
 
-# 3. Remove non-Linux platform binaries to save space
-echo "Removing non-Linux platform binaries..."
-cd "$HOSTING/compute/default/node_modules"
+# 3. Aggressively prune to stay under 220MB
+echo "Pruning non-Linux binaries and unnecessary files..."
+NM="$HOSTING/compute/default/node_modules"
 
-# Remove non-Linux @next/swc binaries
-for dir in @next/swc-*; do
+# Remove ALL non-linux platform packages (swc, sharp, etc.)
+# npm installs optional deps for all platforms
+find "$NM" -type d -name "*darwin*" -exec rm -rf {} + 2>/dev/null || true
+find "$NM" -type d -name "*win32*" -exec rm -rf {} + 2>/dev/null || true
+find "$NM" -type d -name "*arm64*" -exec rm -rf {} + 2>/dev/null || true
+find "$NM" -type d -name "*freebsd*" -exec rm -rf {} + 2>/dev/null || true
+find "$NM" -type d -name "*android*" -exec rm -rf {} + 2>/dev/null || true
+find "$NM" -type d -name "*musl*" -exec rm -rf {} + 2>/dev/null || true
+
+# Remove specific platform packages by name pattern
+cd "$NM"
+for dir in @next/swc-* @img/sharp-* @img/sharp-libvips-*; do
   case "$dir" in
-    *linux-x64*) echo "  Keeping $dir" ;;
-    *) [ -d "$dir" ] && rm -rf "$dir" && echo "  Removed $dir" ;;
+    *linux-x64-gnu*|*linux-x64) echo "  Keeping $dir" ;;
+    *) [ -d "$dir" ] && rm -rf "$dir" && echo "  Removed platform pkg: $dir" ;;
   esac
 done 2>/dev/null || true
 
-# Remove non-Linux @img binaries (sharp)
-if [ -d "@img" ]; then
-  for dir in @img/sharp-*; do
+# Remove next's compiled SWC binaries for non-linux
+if [ -d "next/dist/compiled/@next" ]; then
+  for dir in next/dist/compiled/@next/swc-*; do
     case "$dir" in
-      *linux-x64*) echo "  Keeping $dir" ;;
-      *) [ -d "$dir" ] && rm -rf "$dir" && echo "  Removed $dir" ;;
+      *linux-x64*) echo "  Keeping compiled: $dir" ;;
+      *) [ -d "$dir" ] && rm -rf "$dir" && echo "  Removed compiled: $dir" ;;
     esac
   done 2>/dev/null || true
 fi
 
 # Remove test/docs/examples directories
-find . -type d \( -name "test" -o -name "tests" -o -name "__tests__" \
+find "$NM" -type d \( -name "test" -o -name "tests" -o -name "__tests__" \
   -o -name "docs" -o -name "doc" -o -name "example" -o -name "examples" \
-  -o -name ".github" \) -exec rm -rf {} + 2>/dev/null || true
+  -o -name ".github" -o -name "fixtures" -o -name "benchmark" \) \
+  -exec rm -rf {} + 2>/dev/null || true
 
-# Remove unnecessary files
-find . -type f \( -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" \
-  -o -name "CHANGELOG.md" -o -name "README.md" \) \
+# Remove unnecessary files (source maps, type defs, docs, licenses)
+find "$NM" -type f \( -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" \
+  -o -name "*.md" -o -name "*.txt" -o -name "*.yml" -o -name "*.yaml" \
+  -o -name "LICENSE*" -o -name "LICENCE*" -o -name "*.flow" \
+  -o -name "*.tsbuildinfo" -o -name ".eslintrc*" -o -name ".prettierrc*" \
+  -o -name "tsconfig*.json" \) \
   -delete 2>/dev/null || true
+
+# Remove next's cjs copies if esm exists (duplicated code)
+rm -rf "$NM/next/dist/esm" 2>/dev/null || true
+
+# Report per-package sizes after cleanup
+echo "Package sizes after cleanup:"
+du -sm "$NM"/* 2>/dev/null | sort -rn | head -10
 
 cd "$ROOT"
 
