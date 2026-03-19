@@ -10,7 +10,7 @@
 
 import {
   cpSync, mkdirSync, writeFileSync, existsSync, rmSync,
-  readdirSync, statSync,
+  readdirSync, statSync, lstatSync,
 } from 'fs';
 import { join, extname } from 'path';
 
@@ -28,15 +28,53 @@ const COMPUTE = join(HOSTING, 'compute', 'default');
 mkdirSync(COMPUTE, { recursive: true });
 mkdirSync(join(HOSTING, 'static'), { recursive: true });
 
+// Debug: list standalone contents
+console.log('Standalone contents:', readdirSync(STANDALONE));
+const standaloneNM = join(STANDALONE, 'node_modules');
+if (existsSync(standaloneNM)) {
+  const nmContents = readdirSync(standaloneNM);
+  console.log(`Standalone node_modules: ${nmContents.length} entries`);
+  console.log('Has next:', nmContents.includes('next'));
+  // Check if next is a symlink
+  const nextPath = join(standaloneNM, 'next');
+  if (existsSync(nextPath)) {
+    const stat = lstatSync(nextPath);
+    console.log('next is symlink:', stat.isSymbolicLink());
+  }
+} else {
+  console.log('WARNING: No node_modules in standalone output!');
+}
+
 // 1. Copy standalone server to compute/default
-cpSync(STANDALONE, COMPUTE, { recursive: true });
+// Use dereference: true to follow symlinks (pnpm uses symlinks)
+cpSync(STANDALONE, COMPUTE, { recursive: true, dereference: true });
+
+// Verify next was copied
+const computeNext = join(COMPUTE, 'node_modules', 'next');
+if (!existsSync(computeNext)) {
+  console.log('WARNING: next not found in compute, copying from main node_modules');
+  const mainNext = join(ROOT, 'node_modules', 'next');
+  if (existsSync(mainNext)) {
+    cpSync(mainNext, computeNext, { recursive: true, dereference: true });
+  } else {
+    console.error('ERROR: next not found in main node_modules either!');
+  }
+}
+
+// Also ensure critical peer deps exist
+const criticalDeps = ['react', 'react-dom'];
+for (const dep of criticalDeps) {
+  const computeDep = join(COMPUTE, 'node_modules', dep);
+  if (!existsSync(computeDep)) {
+    console.log(`WARNING: ${dep} not found in compute, copying from main node_modules`);
+    const mainDep = join(ROOT, 'node_modules', dep);
+    if (existsSync(mainDep)) {
+      cpSync(mainDep, computeDep, { recursive: true, dereference: true });
+    }
+  }
+}
 
 // 2. Remove unnecessary files to stay under 220MB limit
-const PATTERNS_TO_REMOVE = [
-  'LICENSE', 'README.md', 'CHANGELOG.md', 'readme.md',
-  '.package-lock.json',
-];
-
 function cleanDir(dir) {
   if (!existsSync(dir)) return;
   try {
@@ -44,7 +82,6 @@ function cleanDir(dir) {
     for (const entry of entries) {
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
-        // Remove test/doc directories from node_modules
         if (['test', 'tests', '__tests__', 'docs', 'doc', 'example', 'examples', '.github'].includes(entry.name)) {
           rmSync(fullPath, { recursive: true, force: true });
           continue;
@@ -52,9 +89,7 @@ function cleanDir(dir) {
         cleanDir(fullPath);
       } else if (entry.isFile()) {
         const ext = extname(entry.name).toLowerCase();
-        // Remove unnecessary file types
-        if (['.md', '.map', '.d.ts', '.d.mts', '.txt', '.yaml', '.yml'].includes(ext) ||
-            PATTERNS_TO_REMOVE.includes(entry.name)) {
+        if (['.md', '.map', '.d.ts', '.d.mts'].includes(ext)) {
           rmSync(fullPath, { force: true });
         }
       }
@@ -139,3 +174,13 @@ function getDirSize(dir) {
 
 const sizeMB = (getDirSize(COMPUTE) / 1024 / 1024).toFixed(1);
 console.log(`✓ Amplify deployment bundle created (compute: ${sizeMB}MB / 220MB limit)`);
+
+// List what's in compute node_modules for debugging
+const computeNM = join(COMPUTE, 'node_modules');
+if (existsSync(computeNM)) {
+  const mods = readdirSync(computeNM);
+  console.log(`Compute node_modules: ${mods.length} packages`);
+  console.log('Key packages:', ['next', 'react', 'react-dom'].map(
+    p => `${p}: ${existsSync(join(computeNM, p)) ? 'YES' : 'MISSING'}`
+  ).join(', '));
+}
