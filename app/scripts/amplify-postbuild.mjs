@@ -5,10 +5,14 @@
  *
  * Next.js 16 is not natively supported by Amplify yet,
  * so we manually create the deployment bundle.
+ * Amplify compute limit: 220MB uncompressed.
  */
 
-import { cpSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
-import { join } from 'path';
+import {
+  cpSync, mkdirSync, writeFileSync, existsSync, rmSync,
+  readdirSync, statSync,
+} from 'fs';
+import { join, extname } from 'path';
 
 const ROOT = process.cwd();
 const STANDALONE = join(ROOT, '.next', 'standalone');
@@ -20,13 +24,49 @@ if (existsSync(HOSTING)) {
 }
 
 // Create directory structure
-mkdirSync(join(HOSTING, 'compute', 'default'), { recursive: true });
+const COMPUTE = join(HOSTING, 'compute', 'default');
+mkdirSync(COMPUTE, { recursive: true });
 mkdirSync(join(HOSTING, 'static'), { recursive: true });
 
 // 1. Copy standalone server to compute/default
-cpSync(STANDALONE, join(HOSTING, 'compute', 'default'), { recursive: true });
+cpSync(STANDALONE, COMPUTE, { recursive: true });
 
-// 2. Copy static assets to static/_next
+// 2. Remove unnecessary files to stay under 220MB limit
+const PATTERNS_TO_REMOVE = [
+  'LICENSE', 'README.md', 'CHANGELOG.md', 'readme.md',
+  '.package-lock.json',
+];
+
+function cleanDir(dir) {
+  if (!existsSync(dir)) return;
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Remove test/doc directories from node_modules
+        if (['test', 'tests', '__tests__', 'docs', 'doc', 'example', 'examples', '.github'].includes(entry.name)) {
+          rmSync(fullPath, { recursive: true, force: true });
+          continue;
+        }
+        cleanDir(fullPath);
+      } else if (entry.isFile()) {
+        const ext = extname(entry.name).toLowerCase();
+        // Remove unnecessary file types
+        if (['.md', '.map', '.d.ts', '.d.mts', '.txt', '.yaml', '.yml'].includes(ext) ||
+            PATTERNS_TO_REMOVE.includes(entry.name)) {
+          rmSync(fullPath, { force: true });
+        }
+      }
+    }
+  } catch {
+    // Skip permission errors
+  }
+}
+
+cleanDir(join(COMPUTE, 'node_modules'));
+
+// 3. Copy static assets to static/_next
 if (existsSync(join(ROOT, '.next', 'static'))) {
   mkdirSync(join(HOSTING, 'static', '_next', 'static'), { recursive: true });
   cpSync(
@@ -36,12 +76,12 @@ if (existsSync(join(ROOT, '.next', 'static'))) {
   );
 }
 
-// 3. Copy public folder to static
+// 4. Copy public folder to static
 if (existsSync(join(ROOT, 'public'))) {
   cpSync(join(ROOT, 'public'), join(HOSTING, 'static'), { recursive: true });
 }
 
-// 4. Create deploy-manifest.json
+// 5. Create deploy-manifest.json
 const manifest = {
   version: 1,
   routes: [
@@ -80,4 +120,22 @@ writeFileSync(
   JSON.stringify(manifest, null, 2)
 );
 
-console.log('✓ Amplify deployment bundle created at .amplify-hosting/');
+// Report size
+function getDirSize(dir) {
+  let size = 0;
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        size += getDirSize(fullPath);
+      } else {
+        size += statSync(fullPath).size;
+      }
+    }
+  } catch { /* skip */ }
+  return size;
+}
+
+const sizeMB = (getDirSize(COMPUTE) / 1024 / 1024).toFixed(1);
+console.log(`✓ Amplify deployment bundle created (compute: ${sizeMB}MB / 220MB limit)`);
