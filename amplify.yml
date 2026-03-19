@@ -11,7 +11,7 @@ applications:
           commands:
             - pnpm build
       artifacts:
-        baseDirectory: .amplify-hosting
+        baseDirectory: .next
         files:
           - '**/*'
       cache:
