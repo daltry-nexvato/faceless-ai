@@ -51,7 +51,8 @@ const computeNM = join(COMPUTE, 'node_modules');
 mkdirSync(computeNM, { recursive: true });
 
 if (existsSync(standaloneNM)) {
-  const neededPackages = readdirSync(standaloneNM);
+  const neededPackages = readdirSync(standaloneNM)
+    .filter(p => !p.startsWith('.'));  // Exclude .pnpm, .package-lock.json, etc.
   console.log(`Standalone needs ${neededPackages.length} packages: ${neededPackages.join(', ')}`);
 
   for (const pkg of neededPackages) {
@@ -78,7 +79,45 @@ if (existsSync(standaloneNM)) {
   }
 }
 
-// 3. Remove unnecessary files to stay under 220MB limit
+// 3. Remove SWC binaries for non-Linux platforms (Amplify runs Amazon Linux)
+const swcDir = join(computeNM, 'next', 'dist', 'compiled', '@next');
+if (existsSync(swcDir)) {
+  const swcEntries = readdirSync(swcDir);
+  for (const entry of swcEntries) {
+    // Keep only linux-x64 variants, remove darwin, win32, arm64 etc.
+    if (entry.includes('swc') && !entry.includes('linux-x64')) {
+      const fullPath = join(swcDir, entry);
+      rmSync(fullPath, { recursive: true, force: true });
+      console.log(`  Removed non-Linux SWC: ${entry}`);
+    }
+  }
+}
+
+// Also remove @next/swc-* platform packages we don't need
+const nextNM = join(computeNM, 'next', 'node_modules');
+if (existsSync(nextNM)) {
+  for (const entry of readdirSync(nextNM)) {
+    if (entry.startsWith('@next') || (entry.includes('swc') && !entry.includes('linux-x64'))) {
+      rmSync(join(nextNM, entry), { recursive: true, force: true });
+      console.log(`  Removed nested: ${entry}`);
+    }
+  }
+}
+
+// Remove platform-specific @swc and @img packages
+for (const scopeDir of ['@swc', '@img']) {
+  const scopePath = join(computeNM, scopeDir);
+  if (existsSync(scopePath)) {
+    for (const entry of readdirSync(scopePath)) {
+      if (!entry.includes('linux-x64') && !entry.includes('linux_x64')) {
+        rmSync(join(scopePath, entry), { recursive: true, force: true });
+        console.log(`  Removed non-Linux: ${scopeDir}/${entry}`);
+      }
+    }
+  }
+}
+
+// 4. Remove unnecessary files to stay under 220MB limit
 function cleanDir(dir) {
   if (!existsSync(dir)) return;
   try {
@@ -105,7 +144,7 @@ function cleanDir(dir) {
 
 cleanDir(computeNM);
 
-// 4. Copy static assets to static/_next
+// 5. Copy static assets to static/_next
 if (existsSync(join(ROOT, '.next', 'static'))) {
   mkdirSync(join(HOSTING, 'static', '_next', 'static'), { recursive: true });
   cpSync(
@@ -115,12 +154,12 @@ if (existsSync(join(ROOT, '.next', 'static'))) {
   );
 }
 
-// 5. Copy public folder to static
+// 6. Copy public folder to static
 if (existsSync(join(ROOT, 'public'))) {
   cpSync(join(ROOT, 'public'), join(HOSTING, 'static'), { recursive: true });
 }
 
-// 6. Create deploy-manifest.json
+// 7. Create deploy-manifest.json
 const manifest = {
   version: 1,
   routes: [
